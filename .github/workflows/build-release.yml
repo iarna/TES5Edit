@@ -1,0 +1,141 @@
+name: Build and Release
+
+'on':
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Locate Delphi installation
+        id: delphi
+        shell: pwsh
+        run: |
+          $rsvars = $env:DELPHI_RSVARS
+          if (-not $rsvars) {
+            # Search for rsvars.bat under common Embarcadero installation paths
+            # (both 32-bit and 64-bit Program Files locations)
+            $searchRoots = @(
+              'C:\Program Files (x86)\Embarcadero',
+              'C:\Program Files\Embarcadero'
+            )
+            foreach ($root in $searchRoots) {
+              $found = Get-ChildItem -Path $root -Filter rsvars.bat -Recurse `
+                -ErrorAction SilentlyContinue |
+                Sort-Object -Property FullName -Descending |
+                Select-Object -First 1
+              if ($found) {
+                $rsvars = $found.FullName
+                break
+              }
+            }
+          }
+          if (-not $rsvars -or -not (Test-Path $rsvars)) {
+            Write-Error "rsvars.bat not found. Set the DELPHI_RSVARS environment variable or install Delphi."
+            exit 1
+          }
+          Write-Output "Found rsvars.bat at: $rsvars"
+          "RSVARS=$rsvars" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        env:
+          DELPHI_RSVARS: ${{ vars.DELPHI_RSVARS }}
+
+      - name: Prepare JCL include files
+        shell: pwsh
+        run: |
+          # JCL requires platform-specific include files derived from the template.
+          # Without these files the JCL packages will fail to compile.
+          $include = 'External\jcl\jcl\source\include'
+          Copy-Item "$include\jcl.template.inc" "$include\jcld29win32.inc" -Force
+          Copy-Item "$include\jcl.template.inc" "$include\jcld29win64.inc" -Force
+
+      - name: Build JCL packages (Win32)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\jcl\jcl\packages\JclPackagesD290.groupproj" /t:Build /p:Config=Release /p:Platform=Win32 /v:minimal
+
+      - name: Build JVCL packages (Win32)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\jvcl\jvcl\packages\D29 Packages.groupproj" /t:Build /p:Config=Release /p:Platform=Win32 /v:minimal
+
+      - name: Build VirtualTrees (Win32)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\VirtualTrees\Packages\RAD Studio 12\VirtualTreeView.groupproj" /t:Build /p:Config=Release /p:Platform=Win32 /v:minimal
+
+      - name: Build FileContainer (Win32)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\FileContainer\FileContainer29.groupproj" /t:Build /p:Config=Release /p:Platform=Win32 /v:minimal
+
+      - name: Build xEdit (Win32)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild xEdit.dproj /t:Build /p:Config=Release /p:Platform=Win32 /v:minimal
+
+      - name: Build JCL packages (Win64)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\jcl\jcl\packages\JclPackagesD290.groupproj" /t:Build /p:Config=Release /p:Platform=Win64 /v:minimal
+
+      - name: Build JVCL packages (Win64)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\jvcl\jvcl\packages\D29 Packages.groupproj" /t:Build /p:Config=Release /p:Platform=Win64 /v:minimal
+
+      - name: Build VirtualTrees (Win64)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\VirtualTrees\Packages\RAD Studio 12\VirtualTreeView.groupproj" /t:Build /p:Config=Release /p:Platform=Win64 /v:minimal
+
+      - name: Build FileContainer (Win64)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild "External\FileContainer\FileContainer29.groupproj" /t:Build /p:Config=Release /p:Platform=Win64 /v:minimal
+
+      - name: Build xEdit (Win64)
+        shell: cmd
+        run: |
+          call "${{ steps.delphi.outputs.RSVARS }}"
+          msbuild xEdit.dproj /t:Build /p:Config=Release /p:Platform=Win64 /v:minimal
+
+      - name: Package release artifacts
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $archiveName = "xEdit-$tag.zip"
+          # Zip the entire Build directory, which contains the compiled executables
+          # as well as committed support files (Edit Scripts, Themes)
+          Compress-Archive -Path 'Build\*' -DestinationPath $archiveName -Force
+          Write-Output "Created archive: $archiveName"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: xEdit ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: xEdit-${{ github.ref_name }}.zip
+          generate_release_notes: true
